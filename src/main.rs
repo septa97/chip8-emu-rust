@@ -6,8 +6,9 @@ use sdl2::rect::Rect;
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
+use std::io::Error;
 use std::time::SystemTime;
-use std::{time, thread};
+use std::{thread, time};
 
 const CLOCK_SPEED: usize = 480;
 const MEMORY_SIZE: usize = 4096;
@@ -94,32 +95,32 @@ impl Chip8 {
         }
     }
 
-    fn load_rom(&mut self, file_path: &String) {
-        let mut file = match File::open(file_path) {
-            Err(e) => panic!("couldn't open {}", e),
-            Ok(file) => file,
-        };
+    fn load_rom(&mut self, file_path: &String) -> Result<(), Error> {
+        let mut file = File::open(file_path)?;
         let mut buffer = Vec::new();
-        let bytes = match file.read_to_end(&mut buffer) {
-            Err(e) => panic!("buffer reading interrupted {}", e),
-            Ok(bytes) => bytes,
-        };
+        let bytes = file.read_to_end(&mut buffer)?;
 
         println!("rom size: {} bytes", bytes);
         if MEMORY_SIZE - 0x200 < bytes {
+            // TODO: is panic the best practice here?
             panic!("ROM too large to fit in memory");
         }
 
         for i in 0..bytes {
             self.memory[i + 0x200] = buffer[i];
         }
+
+        Ok(())
     }
 
     fn emulate_cycle(&mut self) {
         // fetch opcode
-        let high = u16::from(self.memory[self.pc]) << 8;
-        let low = u16::from(self.memory[self.pc + 1]);
+        let high = (self.memory[self.pc] as u16) << 8;
+        let low = self.memory[self.pc + 1] as u16;
         self.opcode = high | low;
+        let x = usize::from((self.opcode & 0x0F00) >> 8);
+        let y = usize::from((self.opcode & 0x00F0) >> 4);
+        let nn = self.opcode as u8 & 0xFF;
 
         // decode and execute opcode
         match self.opcode & 0xF000 {
@@ -145,81 +146,49 @@ impl Chip8 {
                 self.pc = usize::from(self.opcode & 0x0FFF);
             }
             0x3000 => {
-                let x = usize::from((self.opcode & 0x0F00) >> 8);
-                let nn = self.opcode as u8 & 0xFF;
-
                 if self.v[x] == nn {
-                    self.pc += 4;
-                } else {
                     self.pc += 2;
                 }
+                self.pc += 2;
             }
             0x4000 => {
-                let x = usize::from((self.opcode & 0x0F00) >> 8);
-                let nn = self.opcode as u8 & 0xFF;
-
                 if self.v[x] != nn {
-                    self.pc += 4;
-                } else {
                     self.pc += 2;
                 }
+                self.pc += 2;
             }
             0x5000 => {
-                let x = usize::from((self.opcode & 0x0F00) >> 8);
-                let y = usize::from((self.opcode & 0x00F0) >> 4);
-
                 if self.v[x] == self.v[y] {
-                    self.pc += 4;
-                } else {
                     self.pc += 2;
                 }
+                self.pc += 2;
             }
             0x6000 => {
-                let x = usize::from((self.opcode & 0x0F00) >> 8);
-                let nn = self.opcode as u8 & 0xFF;
-
                 self.v[x] = nn;
                 self.pc += 2;
             }
             0x7000 => {
-                let x = usize::from((self.opcode & 0x0F00) >> 8);
-                let nn = self.opcode as u8 & 0xFF;
-
                 self.v[x] = self.v[x].overflowing_add(nn).0;
                 self.pc += 2;
             }
             0x8000 => match self.opcode & 0xF00F {
                 0x8000 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-                    let y = usize::from((self.opcode & 0x00F0) >> 4);
-
                     self.v[x] = self.v[y];
                     self.pc += 2;
                 }
                 0x8001 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-                    let y = usize::from((self.opcode & 0x00F0) >> 4);
-
                     self.v[x] |= self.v[y];
                     self.pc += 2;
                 }
                 0x8002 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-                    let y = usize::from((self.opcode & 0x00F0) >> 4);
-
                     self.v[x] &= self.v[y];
                     self.pc += 2;
                 }
                 0x8003 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-                    let y = usize::from((self.opcode & 0x00F0) >> 4);
-
                     self.v[x] ^= self.v[y];
                     self.pc += 2;
                 }
                 0x8004 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-                    let y = usize::from((self.opcode & 0x00F0) >> 4);
                     let (result, overflowed) = self.v[x].overflowing_add(self.v[y]);
 
                     if overflowed {
@@ -232,8 +201,6 @@ impl Chip8 {
                     self.pc += 2;
                 }
                 0x8005 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-                    let y = usize::from((self.opcode & 0x00F0) >> 4);
                     let (result, overflowed) = self.v[x].overflowing_sub(self.v[y]);
 
                     if overflowed {
@@ -246,16 +213,12 @@ impl Chip8 {
                     self.pc += 2;
                 }
                 0x8006 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-
                     self.v[0xF] = self.v[x] & 1;
                     self.v[x] >>= 1;
 
                     self.pc += 2;
                 }
                 0x8007 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-                    let y = usize::from((self.opcode & 0x00F0) >> 4);
                     let (result, overflowed) = self.v[y].overflowing_sub(self.v[x]);
 
                     if overflowed {
@@ -268,8 +231,6 @@ impl Chip8 {
                     self.pc += 2;
                 }
                 0x800E => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-
                     self.v[0xF] = self.v[x] >> 7;
                     self.v[x] <<= 1;
 
@@ -278,9 +239,6 @@ impl Chip8 {
                 _ => panic!("Unknown opcode!"),
             },
             0x9000 => {
-                let x = usize::from((self.opcode & 0x0F00) >> 8);
-                let y = usize::from((self.opcode & 0x00F0) >> 4);
-
                 if self.v[x] != self.v[y] {
                     self.pc += 4;
                 } else {
@@ -293,16 +251,11 @@ impl Chip8 {
             }
             0xB000 => self.pc = usize::from((self.opcode & 0x0FFF) + u16::from(self.v[0])),
             0xC000 => {
-                let x = usize::from((self.opcode & 0x0F00) >> 8);
-                let nn = self.opcode as u8 & 0xFF;
                 let num: u8 = rand::thread_rng().gen();
-
                 self.v[x] = num & nn;
                 self.pc += 2;
             }
             0xD000 => {
-                let x = usize::from((self.opcode & 0x0F00) >> 8);
-                let y = usize::from((self.opcode & 0x00F0) >> 4);
                 let n = usize::from(self.opcode & 0x000F);
 
                 self.v[0xF] = 0;
@@ -335,27 +288,22 @@ impl Chip8 {
                     let idx = usize::from(self.v[x]);
 
                     if self.key[idx] {
-                        self.pc += 4;
-                    } else {
                         self.pc += 2;
                     }
+                    self.pc += 2;
                 }
                 0xE0A1 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
                     let idx = usize::from(self.v[x]);
 
                     if !self.key[idx] {
-                        self.pc += 4;
-                    } else {
                         self.pc += 2;
                     }
+                    self.pc += 2;
                 }
                 _ => panic!("Unknown opcode!"),
             },
             0xF000 => match self.opcode & 0xF0FF {
                 0xF007 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-
                     self.v[x] = self.delay_timer;
                     self.pc += 2;
                 }
@@ -364,8 +312,6 @@ impl Chip8 {
 
                     for i in 0..KEYPAD_SIZE {
                         if self.key[i] {
-                            let x = usize::from((self.opcode & 0x0F00) >> 8);
-
                             self.v[x] = i as u8;
                             key_pressed = true;
                         }
@@ -376,33 +322,27 @@ impl Chip8 {
                     }
                 }
                 0xF015 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-
                     self.delay_timer = self.v[x];
                     self.pc += 2;
                 }
                 0xF018 => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-
                     self.sound_timer = self.v[x];
                     self.pc += 2;
                 }
                 0xF01E => {
-                    let x = usize::from((self.opcode & 0x0F00) >> 8);
-
-                    if self.index + usize::from(self.v[x]) > 0xFFF {
+                    if self.index + self.v[x] as usize > 0xFFF {
                         self.v[0xF] = 1;
                     } else {
                         self.v[0xF] = 0;
                     }
 
-                    self.index += usize::from(self.v[x]);
+                    self.index += self.v[x] as usize;
                     self.pc += 2;
                 }
                 0xF029 => {
                     let x = usize::from((self.opcode & 0x0F00) >> 8);
 
-                    self.index = usize::from(self.v[x]) * 5;
+                    self.index = self.v[x] as usize * 5;
                     self.pc += 2;
                 }
                 0xF033 => {
@@ -440,6 +380,7 @@ impl Chip8 {
     }
 }
 
+// TODO: do proper error propagation
 fn main() -> Result<(), String> {
     if env::args().len() != 2 {
         panic!("usage: ./chip8 <path-to-ROM-file>");
@@ -490,7 +431,9 @@ fn main() -> Result<(), String> {
         let now = SystemTime::now();
         chip8.emulate_cycle();
         let microseconds = now.elapsed().unwrap().as_micros();
-        thread::sleep(time::Duration::from_micros(microseconds_per_cycle as u64 - microseconds as u64));
+        thread::sleep(time::Duration::from_micros(
+            microseconds_per_cycle as u64 - microseconds as u64,
+        ));
 
         for event in events.poll_iter() {
             match event {
