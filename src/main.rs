@@ -5,15 +5,17 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
 use std::env;
 use std::fs::File;
+use std::io;
 use std::io::prelude::*;
-use std::io::Error;
-use std::time::SystemTime;
 use std::{thread, time};
 
-const CLOCK_SPEED: usize = 480;
+const IPS: usize = 600;
+const FPS: usize = 60;
 const MEMORY_SIZE: usize = 4096;
 const GFX_SIZE: usize = 2048;
 const KEYPAD_SIZE: usize = 16;
+const REGISTER_SIZE: usize = 16;
+const STACK_SIZE: usize = 16;
 const FONTSET_SIZE: usize = 80;
 const SCREEN_WIDTH: usize = 640;
 const SCREEN_HEIGHT: usize = 480;
@@ -95,14 +97,14 @@ impl Chip8 {
         }
     }
 
-    fn load_rom(&mut self, file_path: &String) -> Result<(), Error> {
+    fn load_rom(&mut self, file_path: &String) -> Result<(), io::Error> {
         let mut file = File::open(file_path)?;
         let mut buffer = Vec::new();
         let bytes = file.read_to_end(&mut buffer)?;
 
         println!("rom size: {} bytes", bytes);
         if MEMORY_SIZE - 0x200 < bytes {
-            // TODO: is panic the best practice here?
+            // TODO: is panic the best practice here? I'm thinking of propagating a custom Error instead
             panic!("ROM too large to fit in memory");
         }
 
@@ -240,10 +242,9 @@ impl Chip8 {
             },
             0x9000 => {
                 if self.v[x] != self.v[y] {
-                    self.pc += 4;
-                } else {
                     self.pc += 2;
                 }
+                self.pc += 2;
             }
             0xA000 => {
                 self.index = usize::from(self.opcode & 0x0FFF);
@@ -375,13 +376,11 @@ impl Chip8 {
             },
             _ => panic!("Unknown opcode!"),
         }
-
-        self.update_timers();
     }
 }
 
 // TODO: do proper error propagation
-fn main() -> Result<(), String> {
+fn main() -> Result<(), io::Error> {
     if env::args().len() != 2 {
         panic!("usage: ./chip8 <path-to-ROM-file>");
     }
@@ -395,45 +394,48 @@ fn main() -> Result<(), String> {
         key: [false; KEYPAD_SIZE],
         opcode: 0,
         memory: [0; MEMORY_SIZE],
-        v: [0; 16], // CPU registers
-        index: 0,   // Index register / memory address register
-        pc: 0x200,  // program counter
+        v: [0; REGISTER_SIZE], // CPU registers
+        index: 0,              // Index register / memory address register
+        pc: 0x200,             // program counter
         delay_timer: 0,
         sound_timer: 0,
-        stack: [0; 16],
+        stack: [0; STACK_SIZE],
         sp: 0, // stack pointer
         fontset: [0; FONTSET_SIZE],
     };
 
     chip8.init();
-    chip8.load_rom(file_path);
+    chip8.load_rom(file_path)?;
 
     // SDL2
-    let sdl_context = sdl2::init()?;
-    let video_subsys = sdl_context.video()?;
+    let sdl_context = sdl2::init().unwrap();
+    let video_subsys = sdl_context.video().unwrap();
     let window = video_subsys
         .window("CHIP-8", SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)
         .position_centered()
         .opengl()
         .build()
-        .map_err(|e| e.to_string())?;
+        .unwrap();
 
-    let mut canvas = window.into_canvas().build().map_err(|e| e.to_string())?;
+    let mut canvas = window.into_canvas().build().unwrap();
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
         .create_texture_streaming(PixelFormatEnum::ARGB8888, WIDTH as u32, HEIGHT as u32)
-        .map_err(|e| e.to_string())?;
+        .unwrap();
     let mut pixel_data: [u8; GFX_SIZE * 4] = [0; GFX_SIZE * 4];
-    let mut events = sdl_context.event_pump()?;
-    let microseconds_per_cycle = 1_000_000 / CLOCK_SPEED;
+    let mut events = sdl_context.event_pump().unwrap();
+
+    let ipf = IPS / FPS; // instructions per frame
 
     'main: loop {
-        let now = SystemTime::now();
-        chip8.emulate_cycle();
-        let microseconds = now.elapsed().unwrap().as_micros();
-        thread::sleep(time::Duration::from_micros(
-            microseconds_per_cycle as u64 - microseconds as u64,
-        ));
+        // perform the instructions before ticking the timers
+        for _ in 0..ipf {
+            chip8.emulate_cycle();
+        }
+        chip8.update_timers();
+
+        // sleep every frame instead of every instruction
+        thread::sleep(time::Duration::from_millis(1000 / 60)); // 16.667 milliseconds should be "almost" accurate
 
         for event in events.poll_iter() {
             match event {
@@ -480,13 +482,15 @@ fn main() -> Result<(), String> {
 
             texture
                 .update(None, &pixel_data, 4 * WIDTH as usize)
-                .map_err(|e| e.to_string())?;
+                .unwrap();
             canvas.clear();
-            canvas.copy(
-                &texture,
-                None,
-                Some(Rect::new(0, 0, SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)),
-            )?;
+            canvas
+                .copy(
+                    &texture,
+                    None,
+                    Some(Rect::new(0, 0, SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)),
+                )
+                .unwrap();
             canvas.present();
         }
     }
