@@ -2,7 +2,6 @@ use rand::Rng;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::PixelFormatEnum;
-use sdl2::rect::Rect;
 use std::env;
 use std::fs::File;
 use std::io;
@@ -484,13 +483,7 @@ fn main() -> Result<(), io::Error> {
                 .update(None, &pixel_data, 4 * WIDTH as usize)
                 .unwrap();
             canvas.clear();
-            canvas
-                .copy(
-                    &texture,
-                    None,
-                    Some(Rect::new(0, 0, SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32)),
-                )
-                .unwrap();
+            canvas.copy(&texture, None, None).unwrap();
             canvas.present();
         }
     }
